@@ -1,65 +1,125 @@
+# documentation: https://openlitespeed.org/
+# slogan: High-performance, lightweight, open-source HTTP server with PHP support
+# tags: litespeed,php,webserver,mariadb,redis,phpmyadmin
+# logo: svgs/openlitespeed.svg
+# port: 80
+
 services:
   mysql:
-    image: mariadb:11.4
-    logging:
-      driver: none
+    image: mariadb:latest
     command: ["--max-allowed-packet=512M"]
     volumes:
-      - "./data/db:/var/lib/mysql:delegated"
+      - ${COOLIFY_VOLUME_MYSQL}:/var/lib/mysql
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
     restart: always
     networks:
-      - default
+      - coolify
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   litespeed:
-    image: litespeedtech/openlitespeed:${OLS_VERSION}-${PHP_VERSION}
+    image: litespeedtech/openlitespeed:latest
     container_name: litespeed
-    env_file:
-      - .env
+    environment:
+      - SERVICE_FQDN_LITESPEED_80
+      - TZ=${TimeZone}
     volumes:
       - ./lsws/conf:/usr/local/lsws/conf
       - ./lsws/admin-conf:/usr/local/lsws/admin/conf
       - ./bin/container:/usr/local/bin
       - ./sites:/var/www/vhosts/
-      - ./acme:/root/.acme.sh/
-      - ./logs:/usr/local/lsws/logs/
-    ports:
-      - 80:80
-      - 443:443
-      - 443:443/udp
-      - 7080:7080
+      - ${COOLIFY_VOLUME_LITESPEED_ACME}:/root/.acme.sh/
+      - ${COOLIFY_VOLUME_LITESPEED_LOGS}:/usr/local/lsws/logs/
     restart: always
-    environment:
-      TZ: ${TimeZone}
+    depends_on:
+      - mysql
+      - redis
     networks:
-      - default
+      - coolify
+    labels:
+      - traefik.enable=true
+      
+      # HTTP router (redirect to HTTPS)
+      - traefik.http.routers.litespeed-http.rule=Host(`${SERVICE_FQDN_LITESPEED}`)
+      - traefik.http.routers.litespeed-http.entryPoints=http
+      - traefik.http.routers.litespeed-http.middlewares=redirect-to-https
+      
+      # HTTPS router
+      - traefik.http.routers.litespeed-https.rule=Host(`${SERVICE_FQDN_LITESPEED}`)
+      - traefik.http.routers.litespeed-https.entryPoints=https
+      - traefik.http.routers.litespeed-https.tls=true
+      - traefik.http.routers.litespeed-https.tls.certresolver=letsencrypt
+      
+      # Service definition
+      - traefik.http.services.litespeed.loadbalancer.server.port=80
+      
+      # Network
+      - traefik.docker.network=coolify
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   phpmyadmin:
-    image: phpmyadmin/phpmyadmin:${PHPMYADMIN_VERSION}
-    env_file:
-      - .env
-    ports:
-      - 8080:80
+    image: phpmyadmin/phpmyadmin:latest
     environment:
-      PMA_HOST: mysql
+      - SERVICE_FQDN_PHPMYADMIN_80
+      - PMA_HOST=mysql
     restart: always
+    depends_on:
+      - mysql
     networks:
-      - default
+      - coolify
+    labels:
+      - traefik.enable=true
+      
+      # HTTP router (redirect to HTTPS)
+      - traefik.http.routers.phpmyadmin-http.rule=Host(`${SERVICE_FQDN_PHPMYADMIN}`)
+      - traefik.http.routers.phpmyadmin-http.entryPoints=http
+      - traefik.http.routers.phpmyadmin-http.middlewares=redirect-to-https
+      
+      # HTTPS router
+      - traefik.http.routers.phpmyadmin-https.rule=Host(`${SERVICE_FQDN_PHPMYADMIN}`)
+      - traefik.http.routers.phpmyadmin-https.entryPoints=https
+      - traefik.http.routers.phpmyadmin-https.tls=true
+      - traefik.http.routers.phpmyadmin-https.tls.certresolver=letsencrypt
+      
+      # Service definition
+      - traefik.http.services.phpmyadmin.loadbalancer.server.port=80
+      
+      # Network
+      - traefik.docker.network=coolify
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   redis:
     image: "redis:alpine"
-    logging:
-      driver: none
-    # command: redis-server --requirepass 8b405f60665e48f795752e534d93b722
     volumes:
-      - ./redis/data:/data
+      - ${COOLIFY_VOLUME_REDIS}:/data
       - ./redis/redis.conf:/usr/local/etc/redis/redis.conf
     environment:
       - REDIS_REPLICATION_MODE=master
     restart: always
     networks:
-      - default
+      - coolify
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
 networks:
-  default:
-    driver: bridge
+  coolify:
+    external: true
